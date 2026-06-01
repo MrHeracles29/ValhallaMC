@@ -1,0 +1,17 @@
+name: ValhallaMC
+main: com.valhallamc.converter.ValhallaMC
+version: 1.0.0
+api-version: '1.21'
+author: Jose
+description: Plugin oficial de ValhallaMC para convertir texturas de Java a Bedrock.
+
+commands:
+  iaconvert:
+    description: Convierte el resource pack a Bedrock.
+    usage: /iaconvert
+    permission: valhallamc.admin
+
+permissions:
+  valhallamc.admin:
+    description: Permite usar el comando de conversion.
+    default: op
