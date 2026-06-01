@@ -1,0 +1,32 @@
+name: Compilar Plugin ValhallaMC
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Descargar el codigo del repositorio
+      uses: actions/checkout@v4
+
+    - name: Configurar Java 21
+      uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+
+    - name: Configurar Gradle
+      uses: gradle/actions/setup-gradle@v4
+
+    - name: Compilar el proyecto con Gradle
+      run: gradle build
+
+    - name: Subir el archivo .jar compilado
+      uses: actions/upload-artifact@v4
+      with:
+        name: ValhallaMC-Jar
+        path: build/libs/*.jar
