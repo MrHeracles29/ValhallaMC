@@ -12,9 +12,8 @@ import org.jetbrains.annotations.NotNull;
 
 import java.io.*;
 import java.nio.file.*;
-import java.util.UUID;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
+import java.util.*;
+import java.util.zip.*;
 
 public class ValhallaMC extends JavaPlugin implements CommandExecutor {
 
@@ -23,109 +22,103 @@ public class ValhallaMC extends JavaPlugin implements CommandExecutor {
 
     @Override
     public void onEnable() {
-        if (!getDataFolder().exists()) {
-            getDataFolder().mkdirs();
-        }
-        
+        if (!getDataFolder().exists()) getDataFolder().mkdirs();
         outputFolder = new File(getDataFolder(), "output");
-        if (!outputFolder.exists()) {
-            outputFolder.mkdirs();
-        }
-
-        if (getCommand("iaconvert") != null) {
-            getCommand("iaconvert").setExecutor(this);
-        }
-
-        getLogger().info("¡Plugin ValhallaMC cargado exitosamente!");
+        if (!outputFolder.exists()) outputFolder.mkdirs();
+        if (getCommand("iaconvert") != null) getCommand("iaconvert").setExecutor(this);
     }
 
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command cmd, @NotNull String label, String[] args) {
         if (cmd.getName().equalsIgnoreCase("iaconvert")) {
+            if (isConverting) { sender.sendMessage(ChatColor.RED + "Ya procesando..."); return true; }
             
-            if (isConverting) {
-                sender.sendMessage(ChatColor.RED + "[ValhallaMC] Ya hay una conversion en progreso. Por favor, espera.");
-                return true;
-            }
-
             isConverting = true;
-            sender.sendMessage(ChatColor.YELLOW + "[ValhallaMC] Iniciando la conversion de texturas para Bedrock...");
+            sender.sendMessage(ChatColor.YELLOW + "[ValhallaMC] Buscando el ZIP en plugins/ItemsAdder/output...");
             
             Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
                 try {
-                    File itemsAdderPack = new File("plugins/ItemsAdder/data/resource_pack");
+                    File outputDir = new File("plugins/ItemsAdder/output");
+                    File[] files = outputDir.listFiles((dir, name) -> name.endsWith(".zip"));
                     
-                    if (!itemsAdderPack.exists()) {
-                        sender.sendMessage(ChatColor.RED + "[Error] No se encontro la carpeta en: plugins/ItemsAdder/data/resource_pack");
-                        isConverting = false;
-                        return;
+                    if (files == null || files.length == 0) {
+                        sender.sendMessage(ChatColor.RED + "Error: No encuentro ningún archivo .zip en plugins/ItemsAdder/output");
+                        isConverting = false; return;
                     }
 
-                    File tempDir = new File(getDataFolder(), "temp_bedrock_pack");
-                    if (tempDir.exists()) deleteDirectory(tempDir);
-                    tempDir.mkdirs();
+                    File zipFile = files[0];
+                    File tempExtractDir = new File(getDataFolder(), "unzipped_pack");
+                    if (tempExtractDir.exists()) deleteDirectory(tempExtractDir);
+                    tempExtractDir.mkdirs();
 
-                    File bedrockTexturesFolder = new File(tempDir, "textures/items");
-                    bedrockTexturesFolder.mkdirs();
+                    // Descomprimir el ZIP
+                    try (ZipInputStream zis = new ZipInputStream(new FileInputStream(zipFile))) {
+                        ZipEntry entry;
+                        while ((entry = zis.getNextEntry()) != null) {
+                            File newFile = new File(tempExtractDir, entry.getName());
+                            if (entry.isDirectory()) newFile.mkdirs();
+                            else {
+                                newFile.getParentFile().mkdirs();
+                                Files.copy(zis, newFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                            }
+                        }
+                    }
+
+                    // Ahora procesar como hacíamos antes apuntando a la carpeta extraída
+                    File assetsDir = new File(tempExtractDir, "assets");
+                    if (!assetsDir.exists()) {
+                        sender.sendMessage(ChatColor.RED + "Error: El ZIP no contiene una carpeta 'assets'.");
+                        isConverting = false; return;
+                    }
+
+                    File tempBedrockDir = new File(getDataFolder(), "temp_bedrock_pack");
+                    if (tempBedrockDir.exists()) deleteDirectory(tempBedrockDir);
+                    tempBedrockDir.mkdirs();
+                    File bedrockItemsDir = new File(tempBedrockDir, "textures/items");
+                    bedrockItemsDir.mkdirs();
+
+                    JsonObject textureData = new JsonObject();
+                    processAssets(assetsDir, bedrockItemsDir, textureData);
 
                     JsonObject itemTextureJson = new JsonObject();
-                    itemTextureJson.addProperty("resource_pack_name", "ValhallaMC Bedrock Pack");
+                    itemTextureJson.addProperty("resource_pack_name", "ValhallaMC Pack");
                     itemTextureJson.addProperty("texture_name", "atlas.items");
-                    
-                    JsonObject textureData = new JsonObject();
-
-                    File javaAssets = new File(itemsAdderPack, "assets");
-                    if (javaAssets.exists()) {
-                        processAndCopyPack(javaAssets, bedrockTexturesFolder, textureData);
-                    }
-
                     itemTextureJson.add("texture_data", textureData);
 
-                    File texturesConfigDir = new File(tempDir, "textures");
-                    File itemTextureFile = new File(texturesConfigDir, "item_texture.json");
-                    try (FileWriter writer = new FileWriter(itemTextureFile)) {
-                        writer.write(itemTextureJson.toString());
-                    }
+                    File texConfig = new File(tempBedrockDir, "textures");
+                    texConfig.mkdirs();
+                    try (FileWriter w = new FileWriter(new File(texConfig, "item_texture.json"))) { w.write(itemTextureJson.toString()); }
+                    
+                    generateManifest(tempBedrockDir);
+                    zipFolder(tempBedrockDir, new File(outputFolder, "Valhalla_Bedrock_Pack.mcpack"));
+                    
+                    deleteDirectory(tempExtractDir);
+                    deleteDirectory(tempBedrockDir);
 
-                    generateManifest(tempDir);
-
-                    File zipOutput = new File(outputFolder, "Valhalla_Bedrock_Pack.mcpack");
-                    zipFolder(tempDir, zipOutput);
-
-                    deleteDirectory(tempDir);
-
-                    sender.sendMessage(ChatColor.GREEN + "[Exito] ¡Conversion de ValhallaMC completada!");
-                    sender.sendMessage(ChatColor.GREEN + "[Exito] Archivo generado en: plugins/ValhallaMC/output/Valhalla_Bedrock_Pack.mcpack");
-
+                    sender.sendMessage(ChatColor.GREEN + "¡Éxito! Pack generado en: plugins/ValhallaMC/output/");
                 } catch (Exception e) {
-                    sender.sendMessage(ChatColor.RED + "[Error] Ocurrio un fallo critico. Revisa la consola.");
+                    sender.sendMessage(ChatColor.RED + "Error: " + e.getMessage());
                     e.printStackTrace();
-                } finally {
-                    isConverting = false;
-                }
+                } finally { isConverting = false; }
             });
             return true;
         }
         return false;
     }
 
-    private void processAndCopyPack(File source, File destinationBase, JsonObject textureData) throws IOException {
+    private void processAssets(File source, File dest, JsonObject textureData) {
         File[] files = source.listFiles();
         if (files == null) return;
-
-        for (File file : files) {
-            if (file.isDirectory()) {
-                processAndCopyPack(file, destinationBase, textureData);
-            } else if (file.getName().endsWith(".png")) {
-                String fileNameWithOutExt = file.getName().substring(0, file.getName().lastIndexOf('.'));
-                String cleanId = fileNameWithOutExt.toLowerCase().replaceAll("[^a-z0-9_]", "_");
-
-                File destFile = new File(destinationBase, file.getName());
-                Files.copy(file.toPath(), destFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-
-                JsonObject texturePathObj = new JsonObject();
-                texturePathObj.addProperty("textures", "textures/items/" + fileNameWithOutExt);
-                textureData.add(cleanId, texturePathObj);
+        for (File f : files) {
+            if (f.isDirectory()) processAssets(f, dest, textureData);
+            else if (f.getName().endsWith(".png")) {
+                String name = f.getName().substring(0, f.getName().lastIndexOf('.'));
+                try {
+                    Files.copy(f.toPath(), new File(dest, f.getName()).toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    JsonObject obj = new JsonObject();
+                    obj.addProperty("textures", "textures/items/" + name);
+                    textureData.add(name.toLowerCase().replaceAll("[^a-z0-9_]", "_"), obj);
+                } catch (IOException e) { e.printStackTrace(); }
             }
         }
     }
@@ -133,65 +126,38 @@ public class ValhallaMC extends JavaPlugin implements CommandExecutor {
     private void generateManifest(File folder) throws IOException {
         JsonObject manifest = new JsonObject();
         manifest.addProperty("format_version", 2);
-
         JsonObject header = new JsonObject();
-        header.addProperty("description", "Texturas oficiales de ValhallaMC");
-        header.addProperty("name", "ValhallaMC Bedrock Pack");
+        header.addProperty("name", "ValhallaMC Bedrock");
         header.addProperty("uuid", UUID.randomUUID().toString());
-        
-        JsonArray version = new JsonArray();
-        version.add(1); version.add(0); version.add(0);
-        header.add("version", version);
-
-        JsonArray minEngine = new JsonArray();
-        minEngine.add(1); minEngine.add(21); minEngine.add(0);
-        header.add("min_engine_version", minEngine);
+        JsonArray v = new JsonArray(); v.add(1); v.add(0); v.add(0);
+        header.add("version", v);
+        header.add("min_engine_version", v);
         manifest.add("header", header);
-
         JsonArray modules = new JsonArray();
-        JsonObject module = new JsonObject();
-        module.addProperty("description", "Texturas oficiales de ValhallaMC");
-        module.addProperty("type", "resources");
-        module.addProperty("uuid", UUID.randomUUID().toString());
-        module.add("version", version);
-        modules.add(module);
+        JsonObject mod = new JsonObject();
+        mod.addProperty("type", "resources");
+        mod.addProperty("uuid", UUID.randomUUID().toString());
+        mod.add("version", v);
+        modules.add(mod);
         manifest.add("modules", modules);
-
-        File manifestFile = new File(folder, "manifest.json");
-        try (FileWriter writer = new FileWriter(manifestFile)) {
-            writer.write(manifest.toString());
-        }
+        try (FileWriter w = new FileWriter(new File(folder, "manifest.json"))) { w.write(manifest.toString()); }
     }
 
-    private void zipFolder(File srcFolder, File destZipFile) throws IOException {
-        try (FileOutputStream fos = new FileOutputStream(destZipFile);
-             ZipOutputStream zipOut = new ZipOutputStream(fos)) {
-            zipDir(srcFolder, srcFolder, zipOut);
-        }
-    }
-
-    private void zipDir(File rootFolder, File srcFolder, ZipOutputStream zipOut) throws IOException {
-        File[] files = srcFolder.listFiles();
-        if (files == null) return;
-        for (File file : files) {
-            if (file.isDirectory()) {
-                zipDir(rootFolder, file, zipOut);
-            } else {
-                String relPath = rootFolder.toURI().relativize(file.toURI()).getPath();
-                zipOut.putNextEntry(new ZipEntry(relPath));
-                Files.copy(file.toPath(), zipOut);
-                zipOut.closeEntry();
-            }
+    private void zipFolder(File src, File dest) throws IOException {
+        try (ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(dest))) {
+            Files.walk(src.toPath()).filter(p -> !Files.isDirectory(p)).forEach(p -> {
+                try {
+                    zos.putNextEntry(new ZipEntry(src.toPath().relativize(p).toString()));
+                    Files.copy(p, zos);
+                    zos.closeEntry();
+                } catch (IOException e) { e.printStackTrace(); }
+            });
         }
     }
 
     private void deleteDirectory(File dir) {
         File[] files = dir.listFiles();
-        if (files != null) {
-            for (File file : files) {
-                deleteDirectory(file);
-            }
-        }
+        if (files != null) for (File f : files) deleteDirectory(f);
         dir.delete();
     }
 }
